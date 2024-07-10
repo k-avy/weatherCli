@@ -1,8 +1,9 @@
-// src/main.rs
 use serde::{Serialize, Deserialize};
 use std::env;
 use reqwest::blocking::Client;
 use tiny_http::{Server, Response, Method, StatusCode};
+use std::collections::HashMap;
+
 
 #[derive(Serialize, Deserialize)]
 struct Weather {
@@ -25,6 +26,7 @@ struct Main {
 struct WeatherDescription {
     description: String,
 }
+
 fn get_weather(api_key: &str, city: &str) -> Result<Weather, Box<dyn std::error::Error>> {
     let client = Client::new();
     let url = format!(
@@ -42,29 +44,43 @@ fn get_weather(api_key: &str, city: &str) -> Result<Weather, Box<dyn std::error:
 }
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
-    if args.len() != 3 {
-        eprintln!("Usage: {} <API_KEY> <CITY>", args[0]);
-        std::process::exit(1);
-    }
-    let api_key = &args[1];
-    let city = &args[2];
-    
+    dotenv::dotenv().ok();
+    let api_key = env::var("API_KEY").expect("API_KEY must be set");
+
     let server = Server::http("0.0.0.0:8000").unwrap();
     println!("Server running on port 8000");
 
     for request in server.incoming_requests() {
         let response = match (request.method(), request.url()) {
-            (&Method::Get, "/weather") => {
-                match get_weather(api_key, city) {
-                    Ok(weather) => {
-                        let weather_json = serde_json::to_string(&weather).unwrap();
-                        Response::from_string(weather_json)
-                            .with_status_code(StatusCode(200))
-                            .with_header(tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap())
+            (&Method::Get, url) if url.starts_with("/weather") => {
+                let query_pairs: HashMap<_, _> = url.split('?')
+                    .nth(1)
+                    .unwrap_or("")
+                    .split('&')
+                    .filter_map(|s| {
+                        let mut split = s.split('=');
+                        if let (Some(k), Some(v)) = (split.next(), split.next()) {
+                            Some((k, v))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
+                if let Some(city) = query_pairs.get("city") {
+                    match get_weather(&api_key, city) {
+                        Ok(weather) => {
+                            let weather_json = serde_json::to_string(&weather).unwrap();
+                            Response::from_string(weather_json)
+                                .with_status_code(StatusCode(200))
+                                .with_header(tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap())
+                        }
+                        Err(_) => Response::from_string("Error fetching weather data")
+                                .with_status_code(StatusCode(500)),
                     }
-                    Err(_) => Response::from_string("Error fetching weather data")
-                            .with_status_code(StatusCode(500)),
+                } else {
+                    Response::from_string("City not specified")
+                        .with_status_code(StatusCode(400))
                 }
             },
             _ => Response::from_string("404 Not Found")
